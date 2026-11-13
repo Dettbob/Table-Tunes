@@ -57,7 +57,7 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
 </head>
 <body>
 <main>
-  <h1>Table Tunes</h1>
+  <h1>Table Tunes <span id="ver" style="font-weight:400;letter-spacing:.04em;text-transform:none;margin-left:8px;opacity:.7"></span></h1>
   <div id="banner"></div>
 
   <div class="card">
@@ -145,7 +145,9 @@ function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
 let playingCat=null,lastErr='';
-dbg('page loaded · '+(IOS?'iPhone/iPad mode (1 player)':'desktop mode (2 players, crossfade)'));
+const BUILD='v5 · 13 Nov 16:15';
+document.getElementById('ver').textContent=BUILD;
+dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad mode (1 player)':'desktop mode (2 players, crossfade)'));
 let liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false;
 
 function ensure(){
