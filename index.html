@@ -142,7 +142,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v8 · 13 Nov 17:20';
+const BUILD='v9 · 13 Nov 17:45';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -240,10 +240,12 @@ function updHints(){document.querySelectorAll('#rows .hint[data-cat]').forEach(h
 function listKey(p){
   try{const l=p.getPlaylist();if(!l||!l.length)return null;return l.length+'|'+[...l].sort().slice(0,4).join(',')}catch(e){return null}
 }
+/* NOTE: the plain form {list,listType} made YouTube skip to the next song of the OLD playlist for ~5s before switching
+   (seen on real YouTube). The form with an explicit index/startSeconds switches straight away, so it goes first. */
 const LOAD_TRIES=[
-  (p,lid)=>p.loadPlaylist({list:lid,listType:'playlist'}),
-  (p,lid)=>p.loadPlaylist({list:lid,listType:'playlist',index:0,startSeconds:0}),
-  (p,lid)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)}
+  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0}),
+  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist'}),
+  (p,lid,ix)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)}
 ];
 function fadeVol(to,ms,done){
   clearInterval(fadeIv);fadeIv=null;
@@ -256,9 +258,13 @@ function fadeVol(to,ms,done){
 }
 function loadAndWatch(tok,lid,attempt){
   const s=slots[0];
-  if(attempt===0){ s.oldKey=(lid===s.lastLid)?null:listKey(s.player); s.lastLid=lid; }
+  if(attempt===0){
+    s.oldKey=(lid===s.lastLid)?null:listKey(s.player); s.lastLid=lid;
+    const L=plCheck[lid]&&plCheck[lid].len;               // playlist size is known from the checker → start on a random song directly
+    s.knownRandom=!!(L&&L>1); s.startIdx=s.knownRandom?Math.floor(Math.random()*L):0;
+  }
   dbg('load try '+(attempt+1)+' → '+lid+(s.oldKey?'  (replacing a list of '+s.oldKey.split('|')[0]+' videos)':''));
-  try{LOAD_TRIES[attempt](s.player,lid)}catch(e){dbg('load call threw: '+e.message)}
+  try{LOAD_TRIES[attempt](s.player,lid,s.startIdx)}catch(e){dbg('load call threw: '+e.message)}
   let n=0;
   const iv=setInterval(()=>{
     if(switchTok!==tok||!s.pending){clearInterval(iv);return}
@@ -268,8 +274,8 @@ function loadAndWatch(tok,lid,attempt){
       clearInterval(iv);
       dbg('NEW playlist confirmed ('+key.split('|')[0]+' videos)');
       s.fresh=false; s.cat=s.next;
-      try{s.player.setShuffle(true);s.player.setLoop(true);const l=s.player.getPlaylist();
-        if(l&&l.length>1)s.player.playVideoAt(Math.floor(Math.random()*l.length))}catch(e){}
+      try{s.player.setShuffle(true);s.player.setLoop(true);
+        if(!s.knownRandom){const l=s.player.getPlaylist();if(l&&l.length>1)s.player.playVideoAt(Math.floor(Math.random()*l.length))}}catch(e){}
       fadeVol(store.vol,store.fade*500);
       setTimeout(()=>commit(),1500);
       return;
