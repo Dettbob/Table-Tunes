@@ -109,6 +109,10 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
     <div id="yt"><div class="v"><div id="p0"></div></div><div class="v"><div id="p1"></div></div></div>
     <div id="ytAmb"></div>
   </details>
+  <details>
+    <summary>Debug log</summary>
+    <pre id="dbg" style="white-space:pre-wrap;font-size:12px;color:var(--mute);margin:0 0 12px"></pre>
+  </details>
 </main>
 <div id="toast"></div>
 
@@ -135,6 +139,13 @@ if(location.protocol==='file:'){const b=$('#banner');b.style.display='block';b.t
 /* ================= YouTube music (two slots) ================= */
 const slots=[0,1].map(()=>({player:null,cat:null,gain:0,target:0,prev:0,pending:false,fresh:false,tok:0,lastVol:-1}));
 const NP=IOS?1:2;   /* iPhone: one player only — a 2nd iframe can't start without its own tap */
+const STN={'-1':'unstarted',0:'ended',1:'playing',2:'paused',3:'buffering',5:'cued'};
+const dbgLines=[];
+function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
+function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
+function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
+let playingCat=null,lastErr='';
+dbg('page loaded · '+(IOS?'iPhone/iPad mode (1 player)':'desktop mode (2 players, crossfade)'));
 let liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false;
 
 function ensure(){
@@ -159,12 +170,14 @@ function ensure(){
   return ytReady;
 }
 function onErr(i,code){
-  const msg={2:'invalid playlist link',5:'player error',100:'video unavailable',101:'owner blocked embedding',150:'owner blocked embedding',153:'YouTube refused this page (needs to be served from https, not a local file)'}[code]||'error';
-  toast('YouTube: '+msg+' ('+code+')');
+  const msg={2:'invalid playlist link',5:'player error',100:'video/playlist not found or private',101:'owner blocked embedding',150:'owner blocked embedding',153:'YouTube refused this page (needs https, not a local file)'}[code]||'error';
+  lastErr=msg+' ('+code+')'; dbg('player'+(i+1)+' ERROR '+lastErr);
+  toast('YouTube: '+lastErr);
   if([100,101,150].includes(code)){try{slots[i].player.nextVideo()}catch(e){}}
 }
 function onState(i,e){
   const s=slots[i];
+  dbg('player'+(i+1)+' state: '+(STN[e.data]||e.data));
   if(e.data!==1) return;
   if(s.fresh){
     s.fresh=false;
@@ -179,7 +192,7 @@ function onState(i,e){
 function commit(i){
   const s=slots[i];
   if(!s.pending||s.tok!==switchTok) return;
-  s.pending=false;
+  s.pending=false; playingCat=s.cat; lastErr=''; hideBanner(); dbg('now playing: '+((store.cats.find(c=>c.id===s.cat)||{}).name));
   if(IOS){
     slots.forEach((o,j)=>{if(j!==i){o.target=0;o.gain=0;o.prev=0;try{o.player.pauseVideo()}catch(e){}}});
     s.gain=1;s.target=1;
@@ -205,13 +218,23 @@ async function activate(id){
   if(i<0) i=(liveIdx===0)?1:0;
   if(IOS) i=0;
   const s=slots[i]; s.tok=tok; s.pending=true;
+  dbg('tap “'+cat.name+'” → using player'+(i+1));
+  setTimeout(()=>{
+    if(switchTok!==tok||!s.pending) return;
+    s.pending=false;
+    if(IOS){s.cat=playingCat}else{s.cat=null;try{s.player.pauseVideo()}catch(e){}}
+    wantCat=playingCat; render();
+    dbg('TIMEOUT: “'+cat.name+'” never started playing');
+    showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Open “Debug log” at the bottom of the page and send me a screenshot. Quick test: paste that playlist link into the other category instead.');
+  },9000);
   if(s.cat===id){
     if(s.player.getPlayerState()===1) commit(i); else s.player.playVideo();
   }else{
     s.cat=id; s.fresh=true; s.gain=0; s.target=0; s.prev=0; s.lastVol=-1;
     if(!IOS) s.player.setVolume(0);
     if(IOS&&liveIdx>=0) whoosh();
-    s.player.loadPlaylist({list:ids[Math.floor(Math.random()*ids.length)],listType:'playlist'});
+    const lid=ids[Math.floor(Math.random()*ids.length)]; dbg('player'+(i+1)+' loadPlaylist '+lid);
+    s.player.loadPlaylist({list:lid,listType:'playlist'});
   }
   render();
 }
