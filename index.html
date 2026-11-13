@@ -99,7 +99,7 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
   <details id="ed">
     <summary>Edit categories &amp; playlists</summary>
     <div id="rows"></div>
-    <div class="ctl"><button id="add">+ Add category</button></div>
+    <div class="ctl"><button id="add">+ Add category</button><button id="recheck">↻ Re-check playlists</button></div>
     <p class="hint">Paste YouTube playlist links, one per line. Several links in one category = one is picked at random each time. Playlists must be public or unlisted; auto “Mix” playlists (list=RD…) don’t work in embeds. For no ads, be signed in to your YouTube Premium account in the same browser (Safari).</p>
     <label class="hint"><input type="checkbox" id="whoosh"> Swoosh on music switch (iPhone)</label>
   </details>
@@ -142,7 +142,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v7 · 13 Nov 16:55';
+const BUILD='v8 · 13 Nov 17:20';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -171,11 +171,71 @@ function onErr(i,code){
   const msg={2:'invalid playlist link',5:'player error',100:'video/playlist not found or private',101:'owner blocked embedding',150:'owner blocked embedding',153:'YouTube refused this page (needs https, not a local file)'}[code]||'error';
   lastErr=msg+' ('+code+')'; dbg('player ERROR '+lastErr);
   toast('YouTube: '+lastErr);
+  if(code===2&&slots[i].fresh&&slots[i].pending){ failSwitch('YouTube rejected this playlist (error 2)'); return }
   if([100,101,150].includes(code)&&!slots[i].fresh){try{slots[i].player.nextVideo()}catch(e){}}   // skip blocked songs
+}
+function failSwitch(why){
+  const s=slots[0]; if(!s.pending) return;
+  const nm=(store.cats.find(c=>c.id===s.next)||{}).name||'This category';
+  if(s.lastLid&&plCheck[s.lastLid]) plCheck[s.lastLid]={state:'bad',why:'YouTube won’t play this playlist in embedded players'};
+  s.pending=false; s.fresh=false; switchTok++;
+  wantCat=playingCat; render(); fadeVol(store.vol,600); if(typeof updHints==='function')updHints();
+  dbg('SWITCH FAILED: '+why);
+  showBanner('“'+nm+'” can’t be played: '+why+'. Pick a different playlist for it (see the ✓/✗ marks under “Edit categories & playlists”).');
 }
 function onState(i,e){
   dbg('player state: '+(STN[e.data]||e.data));
 }
+/* ---- playlist checker: asks YouTube whether each playlist can really play in an embedded player ---- */
+const plCheck={};                       // id -> {state:'checking'|'ok'|'bad'|'unknown', title, len, why}
+let probeBusy=Promise.resolve(),probeErr=null;
+function makeProbe(){      /* a FRESH player per check, so it can never still hold the previous playlist */
+  return new Promise(res=>{
+    const host=document.createElement('div');host.style.cssText='position:fixed;left:-500px;bottom:0;width:240px;height:135px';
+    const inner=document.createElement('div');host.appendChild(inner);document.body.appendChild(host);
+    const pv={playsinline:1,controls:0,enablejsapi:1};if(/^https?:/.test(location.protocol))pv.origin=location.origin;
+    const pl=new YT.Player(inner,{width:240,height:135,playerVars:pv,events:{onReady:()=>res({pl,host}),onError:e=>{probeErr=e.data}}});
+  });
+}
+function checkPlaylist(id){
+  const old=plCheck[id];
+  if(old&&old.p) return old.p;
+  if(old&&old.state!=='checking') return Promise.resolve(old);
+  const rec=plCheck[id]={state:'checking'};
+  rec.p=probeBusy=probeBusy.then(async()=>{
+    try{
+      try{
+        const r=await fetch('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent('https://www.youtube.com/playlist?list='+id));
+        if(r.ok){rec.title=((await r.json()).title)||''}
+        else if(r.status===404||r.status===401||r.status===403){rec.state='bad';rec.why='YouTube says this playlist is private or doesn’t exist';return rec}
+      }catch(e){}
+      await ensure(); const {pl,host}=await makeProbe(); probeErr=null;
+      try{
+        pl.cuePlaylist({list:id,listType:'playlist'});
+        for(let n=0;n<26;n++){
+          await new Promise(r=>setTimeout(r,300));
+          let l=null;try{l=pl.getPlaylist()}catch(e){}
+          if(l&&l.length){rec.state='ok';rec.len=l.length;return rec}
+          if(probeErr===2||probeErr===100)break;
+        }
+        rec.state='bad';rec.why='YouTube won’t play this playlist in embedded players (probably none of its videos allow embedding)';
+        return rec;
+      }finally{try{pl.destroy()}catch(e){}try{host.remove()}catch(e){}}
+    }catch(e){rec.state='unknown';return rec}
+    finally{delete rec.p;dbg('playlist check '+id.slice(0,10)+'… → '+rec.state+(rec.len?' ('+rec.len+' videos)':''));if(typeof updHints==='function')updHints();if(typeof render==='function')render()}
+  });
+  return rec.p;
+}
+function hintText(c){
+  const ids=parseLists(c.text); if(!ids.length) return 'No valid playlist link yet';
+  return ids.map(id=>{const r=plCheck[id];
+    if(!r||r.state==='checking') return '… checking '+id.slice(0,10)+'…';
+    if(r.state==='ok') return '✓ '+(r.title?r.title+' · ':'')+r.len+' videos';
+    if(r.state==='bad') return '✗ '+(r.title?r.title+' — ':'')+r.why;
+    return '? couldn’t check (will still try it)'}).join('\n');
+}
+function updHints(){document.querySelectorAll('#rows .hint[data-cat]').forEach(h=>{const c=store.cats.find(x=>x.id===h.dataset.cat);if(c)h.textContent=hintText(c)})}
+
 /* fingerprint of the playlist the player currently holds (order-independent, so shuffle doesn't matter) */
 function listKey(p){
   try{const l=p.getPlaylist();if(!l||!l.length)return null;return l.length+'|'+[...l].sort().slice(0,4).join(',')}catch(e){return null}
@@ -235,6 +295,12 @@ async function activate(id){
   if(!ids.length){toast('Add a YouTube playlist to “'+cat.name+'” first');$('#ed').open=true;return}
   if(!playersReady){ try{await ensure()}catch(e){toast(e.message);return} }
   const s=slots[0];
+  const usable=ids.filter(x=>!(plCheck[x]&&plCheck[x].state==='bad'));
+  if(!usable.length&&!(s.cat===id&&!s.pending)){
+    dbg('tap “'+cat.name+'” — all its playlists are known-bad, music left alone');
+    showBanner('“'+cat.name+'” can’t be played: YouTube won’t play its playlist in embedded players. Your current music was left alone. Pick a different playlist for it (see the ✓/✗ marks under “Edit categories & playlists”).');
+    return;
+  }
 
   if(s.cat===id&&!s.pending){ wantCat=id; if(paused) resume(); render(); return }   // already the active category
 
@@ -247,7 +313,7 @@ async function activate(id){
     dbg('TIMEOUT: “'+cat.name+'” never started playing');
     showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Tap it again to retry. If it keeps failing, open “Debug log” at the bottom and send me a screenshot.');
   },19000);
-  const lid=ids[Math.floor(Math.random()*ids.length)];
+  const lid=usable[Math.floor(Math.random()*usable.length)];
   const go=()=>{ if(switchTok===tok) loadAndWatch(tok,lid,0) };
   if(IOS){
     if(liveIdx>=0) whoosh();     // soft swell covers the gap; load straight away (must happen right after the tap)
@@ -483,7 +549,7 @@ function render(){
     const n=parseLists(c.text).length;
     const b=document.createElement('button');
     b.className='tile'+(wantCat===c.id?' on':''); b.style.setProperty('--c',c.color);
-    b.innerHTML='<i class="k">'+(idx<9?idx+1:'')+'</i><b>'+esc(c.name)+'</b><span>'+(wantCat===c.id?(paused?'paused':'playing'):n+(n===1?' playlist':' playlists'))+'</span>';
+    b.innerHTML='<i class="k">'+(idx<9?idx+1:'')+'</i><b>'+esc(c.name)+'</b><span>'+(wantCat===c.id?(paused?'paused':'playing'):(n&&parseLists(c.text).every(x=>plCheck[x]&&plCheck[x].state==='bad')?'⚠ can’t be played':n+(n===1?' playlist':' playlists')))+'</span>';
     b.onclick=()=>activate(c.id); g.appendChild(b);
   });
   const w=store.cats.find(c=>c.id===wantCat);
@@ -516,16 +582,18 @@ function renderEditor(){
     d.innerHTML='<div class="top"><input type="text" value="'+esc(c.name)+'"><input type="color" value="'+c.color+'"><button title="Delete">🗑</button></div>'+
       '<textarea placeholder="https://www.youtube.com/playlist?list=…">'+esc(c.text||'')+'</textarea><div class="hint"></div>';
     const [name,col,del]=d.querySelectorAll('input,button'); const ta=d.querySelector('textarea'),h=d.querySelector('.hint');
-    const upd=()=>{h.textContent=parseLists(c.text).length+' valid playlist(s)'};upd();
+    h.dataset.cat=c.id;h.style.whiteSpace='pre-line';
+    const upd=()=>{h.textContent=hintText(c)};upd();
     name.oninput=()=>{c.name=name.value;save();render()};
     col.oninput=()=>{c.color=col.value;save();render()};
-    ta.oninput=()=>{c.text=ta.value;save();upd();render()};
+    ta.oninput=()=>{c.text=ta.value;save();upd();render();clearTimeout(c._t);c._t=setTimeout(()=>{parseLists(c.text).forEach(checkPlaylist)},900)};
     del.onclick=()=>{if(confirm('Delete “'+c.name+'”?')){store.cats=store.cats.filter(x=>x!==c);save();renderEditor();render()}};
     r.appendChild(d);
   });
 }
 $('#add').onclick=()=>{const pal=['#4aa8a0','#e0533d','#d9a441','#8a6fd1','#4f8fe6','#d96ba0'];
   store.cats.push({id:uid(),name:'New category',color:pal[store.cats.length%pal.length],text:''});save();renderEditor();render()};
+$('#recheck').onclick=()=>{Object.keys(plCheck).forEach(k=>delete plCheck[k]);hideBanner();updHints();store.cats.forEach(c=>parseLists(c.text).forEach(checkPlaylist))};
 $('#pp').onclick=()=>{unlockAudio();paused?resume():pauseAll()};
 $('#nx').onclick=()=>{if(liveIdx>=0)try{slots[liveIdx].player.nextVideo()}catch(e){}};
 $('#app').onclick=()=>{
@@ -561,6 +629,7 @@ addEventListener('keydown',e=>{
   else if(e.key==='n')$('#nx').click();
 });
 render();renderEditor();renderSfx();
+setTimeout(()=>{store.cats.forEach(c=>parseLists(c.text).forEach(checkPlaylist))},600);
 if(!store.cats.some(c=>parseLists(c.text).length)) $('#ed').open=true;
 ensure().catch(()=>{});
 </script>
