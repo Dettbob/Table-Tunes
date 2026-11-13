@@ -136,33 +136,29 @@ let tId;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('s
 
 if(location.protocol==='file:'){const b=$('#banner');b.style.display='block';b.textContent='This page is opened as a local file, so YouTube will refuse to play. Open it from a web address (for example GitHub Pages) instead.'}
 
-/* ================= YouTube music (two slots) ================= */
-const slots=[0,1].map(()=>({player:null,cat:null,gain:0,target:0,prev:0,pending:false,fresh:false,tok:0,lastVol:-1}));
-const NP=IOS?1:2;   /* iPhone: one player only — a 2nd iframe can't start without its own tap */
+/* ================= YouTube music (ONE player, same logic on every device) ================= */
 const STN={'-1':'unstarted',0:'ended',1:'playing',2:'paused',3:'buffering',5:'cued'};
 const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-let playingCat=null,lastErr='';
-const BUILD='v6 · 13 Nov 16:35';
+const BUILD='v7 · 13 Nov 16:55';
 document.getElementById('ver').textContent=BUILD;
-dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad mode (1 player)':'desktop mode (2 players, crossfade)'));
-let liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false;
+dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
+
+const slots=[{player:null,cat:null,next:null,pending:false,fresh:false,tok:0,oldKey:null,lastLid:null}];
+let playingCat=null,lastErr='',liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false,fadeIv=null;
 
 function ensure(){
   if(ytReady) return ytReady;
   ytReady=new Promise((res,rej)=>{
     window.onYouTubeIframeAPIReady=()=>{
-      let n=0;
       const pv={playsinline:1,controls:0,rel:0,disablekb:1,enablejsapi:1};
       if(/^https?:/.test(location.protocol)) pv.origin=location.origin;
-      slots.slice(0,NP).forEach((s,i)=>{
-        s.player=new YT.Player('p'+i,{width:'100%',height:'100%',playerVars:pv,events:{
-          onReady:()=>{if(++n===NP){playersReady=true;res()}},
-          onStateChange:e=>onState(i,e),
-          onError:e=>onErr(i,e.data)}});
-      });
+      slots[0].player=new YT.Player('p0',{width:'100%',height:'100%',playerVars:pv,events:{
+        onReady:()=>{playersReady=true;res()},
+        onStateChange:e=>onState(0,e),
+        onError:e=>onErr(0,e.data)}});
     };
     const sc=document.createElement('script');
     sc.src='https://www.youtube.com/iframe_api';
@@ -173,18 +169,14 @@ function ensure(){
 }
 function onErr(i,code){
   const msg={2:'invalid playlist link',5:'player error',100:'video/playlist not found or private',101:'owner blocked embedding',150:'owner blocked embedding',153:'YouTube refused this page (needs https, not a local file)'}[code]||'error';
-  lastErr=msg+' ('+code+')'; dbg('player'+(i+1)+' ERROR '+lastErr);
+  lastErr=msg+' ('+code+')'; dbg('player ERROR '+lastErr);
   toast('YouTube: '+lastErr);
-  if([100,101,150].includes(code)&&!slots[i].fresh){try{slots[i].player.nextVideo()}catch(e){}}
+  if([100,101,150].includes(code)&&!slots[i].fresh){try{slots[i].player.nextVideo()}catch(e){}}   // skip blocked songs
 }
 function onState(i,e){
-  const s=slots[i];
-  dbg('player'+(i+1)+' state: '+(STN[e.data]||e.data));
-  if(e.data!==1) return;
-  if(s.fresh) return;          /* a load is in progress: watchLoad() decides when the NEW playlist is really in */
-  commit(i);
+  dbg('player state: '+(STN[e.data]||e.data));
 }
-/* fingerprint of the playlist a player currently holds (order-independent, so shuffle doesn't matter) */
+/* fingerprint of the playlist the player currently holds (order-independent, so shuffle doesn't matter) */
 function listKey(p){
   try{const l=p.getPlaylist();if(!l||!l.length)return null;return l.length+'|'+[...l].sort().slice(0,4).join(',')}catch(e){return null}
 }
@@ -193,10 +185,19 @@ const LOAD_TRIES=[
   (p,lid)=>p.loadPlaylist({list:lid,listType:'playlist',index:0,startSeconds:0}),
   (p,lid)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)}
 ];
-function loadAndWatch(i,tok,lid,attempt){
-  const s=slots[i];
+function fadeVol(to,ms,done){
+  clearInterval(fadeIv);fadeIv=null;
+  const p=slots[0].player;
+  if(IOS||!p||!p.setVolume){if(done)done();return}      // iOS ignores web-page volume
+  let from=100;try{from=p.getVolume()}catch(e){}
+  const steps=Math.max(1,Math.round(ms/50));let n=0;
+  fadeIv=setInterval(()=>{n++;try{p.setVolume(Math.round(from+(to-from)*n/steps))}catch(e){}
+    if(n>=steps){clearInterval(fadeIv);fadeIv=null;if(done)done()}},50);
+}
+function loadAndWatch(tok,lid,attempt){
+  const s=slots[0];
   if(attempt===0){ s.oldKey=(lid===s.lastLid)?null:listKey(s.player); s.lastLid=lid; }
-  dbg('player'+(i+1)+' load try '+(attempt+1)+' → '+lid+(s.oldKey?'  (replacing list '+s.oldKey.split('|')[0]+' videos)':''));
+  dbg('load try '+(attempt+1)+' → '+lid+(s.oldKey?'  (replacing a list of '+s.oldKey.split('|')[0]+' videos)':''));
   try{LOAD_TRIES[attempt](s.player,lid)}catch(e){dbg('load call threw: '+e.message)}
   let n=0;
   const iv=setInterval(()=>{
@@ -205,31 +206,27 @@ function loadAndWatch(i,tok,lid,attempt){
     const key=listKey(s.player);
     if(key&&key!==s.oldKey){
       clearInterval(iv);
-      dbg('player'+(i+1)+' NEW playlist confirmed ('+key.split('|')[0]+' videos)');
-      s.fresh=false;
+      dbg('NEW playlist confirmed ('+key.split('|')[0]+' videos)');
+      s.fresh=false; s.cat=s.next;
       try{s.player.setShuffle(true);s.player.setLoop(true);const l=s.player.getPlaylist();
         if(l&&l.length>1)s.player.playVideoAt(Math.floor(Math.random()*l.length))}catch(e){}
-      setTimeout(()=>commit(i),2500);
+      fadeVol(store.vol,store.fade*500);
+      setTimeout(()=>commit(),1500);
       return;
     }
     if(n>=12){
       clearInterval(iv);
-      if(attempt+1<LOAD_TRIES.length){dbg('player'+(i+1)+' still on the OLD playlist after 5s — retrying a different way');loadAndWatch(i,tok,lid,attempt+1)}
+      if(attempt+1<LOAD_TRIES.length){dbg('still on the OLD playlist after 5s — retrying a different way');loadAndWatch(tok,lid,attempt+1)}
     }
   },400);
 }
-function commit(i){
-  const s=slots[i];
+function commit(){
+  const s=slots[0];
   if(!s.pending||s.tok!==switchTok) return;
-  s.pending=false; playingCat=s.cat; lastErr=''; hideBanner(); dbg('now playing: '+((store.cats.find(c=>c.id===s.cat)||{}).name));
-  if(IOS){
-    slots.forEach((o,j)=>{if(j!==i){o.target=0;o.gain=0;o.prev=0;try{o.player.pauseVideo()}catch(e){}}});
-    s.gain=1;s.target=1;
-  }else{
-    slots.forEach((o,j)=>{if(j!==i) o.target=0});
-    s.target=1;
-  }
-  liveIdx=i; paused=false; render();
+  s.pending=false; playingCat=s.cat; lastErr=''; hideBanner();
+  liveIdx=0; paused=false;
+  dbg('now playing: '+((store.cats.find(c=>c.id===s.cat)||{}).name));
+  render();
 }
 async function activate(id){
   unlockAudio();
@@ -237,52 +234,35 @@ async function activate(id){
   const ids=parseLists(cat.text);
   if(!ids.length){toast('Add a YouTube playlist to “'+cat.name+'” first');$('#ed').open=true;return}
   if(!playersReady){ try{await ensure()}catch(e){toast(e.message);return} }
+  const s=slots[0];
 
-  if(liveIdx>=0&&slots[liveIdx].cat===id&&!slots[liveIdx].pending){ wantCat=id; if(paused) resume(); render(); return }
+  if(s.cat===id&&!s.pending){ wantCat=id; if(paused) resume(); render(); return }   // already the active category
 
-  const tok=++switchTok; wantCat=id;
-  slots.forEach((s,k)=>{ if(s.pending&&k!==liveIdx){ s.pending=false; try{s.player.pauseVideo()}catch(e){} s.cat=null; s.gain=0; s.target=0 } });
-
-  let i=slots.findIndex((s,k)=>s.cat===id&&k!==liveIdx);
-  if(i<0) i=(liveIdx===0)?1:0;
-  if(IOS) i=0;
-  const s=slots[i]; s.tok=tok; s.pending=true;
-  dbg('tap “'+cat.name+'” → using player'+(i+1));
+  const tok=++switchTok; wantCat=id; s.tok=tok; s.next=id; s.pending=true; s.fresh=true;
+  dbg('tap “'+cat.name+'”'+(s.cat&&s.cat!==id?'  (switching from “'+((store.cats.find(c=>c.id===s.cat)||{}).name)+'”)':''));
   setTimeout(()=>{
     if(switchTok!==tok||!s.pending) return;
     s.pending=false; s.fresh=false;
-    if(IOS){s.cat=playingCat}else{s.cat=null;try{s.player.pauseVideo()}catch(e){}}
-    wantCat=playingCat; render();
+    wantCat=playingCat; render(); fadeVol(store.vol,600);
     dbg('TIMEOUT: “'+cat.name+'” never started playing');
-    showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Open “Debug log” at the bottom of the page and send me a screenshot. Quick test: paste that playlist link into the other category instead.');
+    showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Tap it again to retry. If it keeps failing, open “Debug log” at the bottom and send me a screenshot.');
   },19000);
-  if(s.cat===id){
-    if(s.player.getPlayerState()===1) commit(i); else s.player.playVideo();
+  const lid=ids[Math.floor(Math.random()*ids.length)];
+  const go=()=>{ if(switchTok===tok) loadAndWatch(tok,lid,0) };
+  if(IOS){
+    if(liveIdx>=0) whoosh();     // soft swell covers the gap; load straight away (must happen right after the tap)
+    go();
+  }else if(liveIdx>=0&&!paused&&s.cat){
+    fadeVol(0,store.fade*500,go);   // dip the volume, then switch, then fade back in
   }else{
-    s.cat=id; s.fresh=true; s.gain=0; s.target=0; s.prev=0; s.lastVol=-1;
-    if(!IOS) s.player.setVolume(0);
-    if(IOS&&liveIdx>=0) whoosh();
-    const lid=ids[Math.floor(Math.random()*ids.length)];
-    loadAndWatch(i,tok,lid,0);
+    try{s.player.setVolume(0)}catch(e){}
+    go();
   }
   render();
 }
 function pauseAll(){paused=true;slots.forEach(s=>{try{s.player&&s.player.pauseVideo()}catch(e){}});render()}
 function resume(){paused=false;if(liveIdx>=0)try{slots[liveIdx].player.playVideo()}catch(e){};render()}
 
-setInterval(()=>{            /* equal-power crossfade (desktop/Android; iOS ignores YouTube volume) */
-  if(IOS) return;
-  const step=50/(store.fade*1000);
-  slots.forEach(s=>{
-    if(!s.player||!s.player.setVolume) return;
-    s.prev=s.gain;
-    if(s.gain<s.target) s.gain=Math.min(s.target,s.gain+step);
-    else if(s.gain>s.target) s.gain=Math.max(s.target,s.gain-step);
-    const v=Math.round(store.vol*Math.sin(s.gain*Math.PI/2));
-    if(v!==s.lastVol){s.lastVol=v;try{s.player.setVolume(v)}catch(e){}}
-    if(s.prev>0&&s.gain===0&&s.target===0&&!s.pending&&!s.fresh){try{s.player.pauseVideo()}catch(e){}}
-  });
-},50);
 setInterval(()=>{
   if(liveIdx<0) return;
   try{const d=slots[liveIdx].player.getVideoData(); if(d&&d.title) $('#np').textContent=d.title}catch(e){}
@@ -553,7 +533,7 @@ $('#app').onclick=()=>{
   if(!ids.length){toast('Pick a category with a playlist first');return}
   window.open('https://www.youtube.com/playlist?list='+ids[Math.floor(Math.random()*ids.length)],'_blank');
 };
-$('#vol').value=store.vol; $('#vol').oninput=e=>{store.vol=+e.target.value;slots.forEach(s=>s.lastVol=-1);save()};
+$('#vol').value=store.vol; $('#vol').oninput=e=>{store.vol=+e.target.value;save();if(!IOS&&!fadeIv&&slots[0].player&&liveIdx>=0)try{slots[0].player.setVolume(store.vol)}catch(_){}};
 $('#fade').value=store.fade; $('#fv').textContent=store.fade+'s';
 $('#fade').oninput=e=>{store.fade=+e.target.value;$('#fv').textContent=store.fade+'s';save()};
 $('#sfxVol').value=store.sfxVol; $('#sfxVol').oninput=e=>{store.sfxVol=+e.target.value;save();if(sfxMaster)sfxMaster.gain.setTargetAtTime(store.sfxVol/100*MASTER,actx.currentTime,.05)};
@@ -572,7 +552,8 @@ $('#ytAdd').onclick=()=>{
   store.yt.push({id:'y'+uid(),name,url});save();$('#ytName').value='';$('#ytUrl').value='';renderSfx();toast('Added “'+name+'”');
 };
 $('#whoosh').checked=store.whoosh; $('#whoosh').onchange=e=>{store.whoosh=e.target.checked;save()};
-if(IOS){$('#p1').closest('.v').style.display='none';$('#fadeWrap').style.display='none';$('#iosHint').style.display='block';$('#vol').closest('label').style.display='none'}
+$('#p1').closest('.v').style.display='none';
+if(IOS){$('#fadeWrap').style.display='none';$('#iosHint').style.display='block';$('#vol').closest('label').style.display='none'}
 addEventListener('keydown',e=>{
   if(/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if(e.key>='1'&&e.key<='9'){const c=store.cats[+e.key-1];if(c)activate(c.id)}
