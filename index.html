@@ -142,7 +142,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v9 · 13 Nov 17:45';
+const BUILD='v10 · 13 Nov 18:10';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -240,12 +240,13 @@ function updHints(){document.querySelectorAll('#rows .hint[data-cat]').forEach(h
 function listKey(p){
   try{const l=p.getPlaylist();if(!l||!l.length)return null;return l.length+'|'+[...l].sort().slice(0,4).join(',')}catch(e){return null}
 }
-/* NOTE: the plain form {list,listType} made YouTube skip to the next song of the OLD playlist for ~5s before switching
-   (seen on real YouTube). The form with an explicit index/startSeconds switches straight away, so it goes first. */
+/* Verified on real YouTube: calling loadPlaylist while a playlist is playing makes it SKIP TO THE NEXT SONG OF THE OLD LIST and swallow the
+   load (the next call, ~5s later, then works). Calling stopVideo() first makes the very first load work (4 of 4 trials). */
 const LOAD_TRIES=[
-  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0}),
-  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist'}),
-  (p,lid,ix)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)}
+  (p,lid,ix)=>{p.stopVideo();p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0})},
+  (p,lid,ix)=>{p.stopVideo();p.loadPlaylist({list:lid,listType:'playlist'})},
+  (p,lid,ix)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)},
+  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0})
 ];
 function fadeVol(to,ms,done){
   clearInterval(fadeIv);fadeIv=null;
@@ -277,7 +278,7 @@ function loadAndWatch(tok,lid,attempt){
       try{s.player.setShuffle(true);s.player.setLoop(true);
         if(!s.knownRandom){const l=s.player.getPlaylist();if(l&&l.length>1)s.player.playVideoAt(Math.floor(Math.random()*l.length))}}catch(e){}
       fadeVol(store.vol,store.fade*500);
-      setTimeout(()=>commit(),1500);
+      awaitPlaying(tok);
       return;
     }
     if(n>=12){
@@ -285,6 +286,16 @@ function loadAndWatch(tok,lid,attempt){
       if(attempt+1<LOAD_TRIES.length){dbg('still on the OLD playlist after 5s — retrying a different way');loadAndWatch(tok,lid,attempt+1)}
     }
   },400);
+}
+function awaitPlaying(tok){          /* UI says “playing” only once the new song really plays */
+  const s=slots[0]; let n=0;
+  const iv=setInterval(()=>{
+    if(switchTok!==tok||!s.pending){clearInterval(iv);return}
+    n++; let st=-9;try{st=s.player.getPlayerState()}catch(e){}
+    if(st===1){clearInterval(iv);commit();return}
+    if(n===6){try{s.player.playVideo()}catch(e){}dbg('new list loaded but not playing yet — nudging play')}
+    if(n>=14){clearInterval(iv);dbg('WARNING: new list loaded but never reached “playing” (state '+st+')');commit()}
+  },500);
 }
 function commit(){
   const s=slots[0];
@@ -318,7 +329,7 @@ async function activate(id){
     wantCat=playingCat; render(); fadeVol(store.vol,600);
     dbg('TIMEOUT: “'+cat.name+'” never started playing');
     showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Tap it again to retry. If it keeps failing, open “Debug log” at the bottom and send me a screenshot.');
-  },19000);
+  },26000);
   const lid=usable[Math.floor(Math.random()*usable.length)];
   const go=()=>{ if(switchTok===tok) loadAndWatch(tok,lid,0) };
   if(IOS){
