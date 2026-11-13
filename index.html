@@ -124,13 +124,30 @@ const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='Mac
 
 let store={};
 try{store=JSON.parse(localStorage.getItem('tt.v1'))||{}}catch(e){}
-store=Object.assign({fade:4,vol:80,sfxVol:80,whoosh:true,sfx:{},custom:[],yt:[],cats:[
-  {id:uid(),name:'Board game chill',color:'#4aa8a0',text:''},
-  {id:uid(),name:'Intense',color:'#e0533d',text:''}]},store);
+store=Object.assign({fade:4,vol:80,sfxVol:80,whoosh:true,sfx:{},custom:[],yt:[],cats:[]},store);
+/* built-in categories, so every device starts with the same set (your own extra categories are kept) */
+const PRESETS=[
+  {id:'p-boardgame',name:'Boardgame chill',color:'#4aa8a0',text:'https://youtube.com/playlist?list=PLdgKUwDcGZkw'},
+  {id:'p-hearthstone',name:'Hearthstone',color:'#d89a3a',text:'https://www.youtube.com/watch?v=psvFoGMtcFQ'},
+  {id:'p-duel',name:'Duel',color:'#c0392b',text:'https://youtube.com/playlist?list=PLX8oL9MuhEQU'},
+  {id:'p-hype',name:'Hype',color:'#e0533d',text:'https://youtube.com/playlist?list=PLbw9m9Ix6GZE'},
+  {id:'p-dark',name:'Dark ambient',color:'#6a5acd',text:'https://youtube.com/playlist?list=PL1sD7vqk9C7wSi4d6nbDZLvA7pXs4sHGh'},
+  {id:'p-epic',name:'Epic',color:'#2e86c1',text:'https://youtube.com/playlist?list=PLAsNb7SVCNJ-uBg363Nzns0ltBcq0Tr3L'}];
+if(store.presetVer!==1){
+  const names=PRESETS.map(p=>p.name.toLowerCase());
+  const keep=(store.cats||[]).filter(c=>(c.text||'').trim()&&!names.includes((c.name||'').trim().toLowerCase())&&!/^(board game chill|intense)$/i.test((c.name||'').trim()));
+  store.cats=PRESETS.map(p=>Object.assign({},p)).concat(keep); store.presetVer=1;
+  try{localStorage.setItem('tt.v1',JSON.stringify(store))}catch(e){}
+}
 const save=()=>{try{localStorage.setItem('tt.v1',JSON.stringify(store))}catch(e){}};
 const parseLists=t=>(t||'').split(/\s+/).filter(Boolean).map(x=>{
   const m=x.match(/[?&]list=([\w-]+)/); if(m) return m[1];
-  return /^[\w-]{13,}$/.test(x)?x:null}).filter(id=>id&&!id.startsWith('RD'));
+  const v=x.match(/(?:[?&]v=|youtu\.be\/|shorts\/)([\w-]{11})(?![\w-])/); if(v) return 'v:'+v[1];
+  return /^[\w-]{13,}$/.test(x)?x:null}).filter(id=>id&&!id.startsWith('RD'))
+const lpLoad=(p,id,ix=0)=>id.startsWith('v:')?p.loadPlaylist([id.slice(2)],0,0):p.loadPlaylist({list:id,listType:'playlist',index:ix,startSeconds:0});
+const lpLoadPlain=(p,id)=>id.startsWith('v:')?p.loadPlaylist([id.slice(2)],0,0):p.loadPlaylist({list:id,listType:'playlist'});
+const lpCue=(p,id)=>id.startsWith('v:')?p.cuePlaylist([id.slice(2)],0,0):p.cuePlaylist({list:id,listType:'playlist'});
+const plUrl=id=>id.startsWith('v:')?'https://www.youtube.com/watch?v='+id.slice(2):'https://www.youtube.com/playlist?list='+id;;
 
 let tId;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(tId);tId=setTimeout(()=>t.classList.remove('show'),4500)}
 
@@ -142,7 +159,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v11 · 13 Nov 18:40';
+const BUILD='v12 · 13 Nov 18:55';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -205,13 +222,13 @@ function checkPlaylist(id){
   rec.p=probeBusy=probeBusy.then(async()=>{
     try{
       try{
-        const r=await fetch('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent('https://www.youtube.com/playlist?list='+id));
+        const r=await fetch('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent(plUrl(id)));
         if(r.ok){rec.title=((await r.json()).title)||''}
         else if(r.status===404||r.status===401||r.status===403){rec.state='bad';rec.why='YouTube says this playlist is private or doesn’t exist';return rec}
       }catch(e){}
       await ensure(); const {pl,host}=await makeProbe(); probeErr=null;
       try{
-        pl.cuePlaylist({list:id,listType:'playlist'});
+        lpCue(pl,id);
         for(let n=0;n<26;n++){
           await new Promise(r=>setTimeout(r,300));
           let l=null;try{l=pl.getPlaylist()}catch(e){}
@@ -243,10 +260,10 @@ function listKey(p){
 /* Verified on real YouTube: calling loadPlaylist while a playlist is playing makes it SKIP TO THE NEXT SONG OF THE OLD LIST and swallow the
    load (the next call, ~5s later, then works). Calling stopVideo() first makes the very first load work (4 of 4 trials). */
 const LOAD_TRIES=[
-  (p,lid,ix)=>{p.stopVideo();p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0})},
-  (p,lid,ix)=>{p.stopVideo();p.loadPlaylist({list:lid,listType:'playlist'})},
-  (p,lid,ix)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)},
-  (p,lid,ix)=>p.loadPlaylist({list:lid,listType:'playlist',index:ix,startSeconds:0})
+  (p,lid,ix)=>{p.stopVideo();lpLoad(p,lid,ix)},
+  (p,lid,ix)=>{p.stopVideo();lpLoadPlain(p,lid)},
+  (p,lid,ix)=>{lpCue(p,lid);setTimeout(()=>{try{p.playVideo()}catch(e){}},500)},
+  (p,lid,ix)=>lpLoad(p,lid,ix)
 ];
 function fadeVol(to,ms,done){
   clearInterval(fadeIv);fadeIv=null;
@@ -652,7 +669,7 @@ $('#nx').onclick=()=>{if(liveIdx>=0)try{slots[liveIdx].player.nextVideo()}catch(
 $('#app').onclick=()=>{
   const c=store.cats.find(x=>x.id===wantCat); const ids=c?parseLists(c.text):[];
   if(!ids.length){toast('Pick a category with a playlist first');return}
-  window.open('https://www.youtube.com/playlist?list='+ids[Math.floor(Math.random()*ids.length)],'_blank');
+  window.open(plUrl(ids[Math.floor(Math.random()*ids.length)]),'_blank');
 };
 $('#vol').value=store.vol; $('#vol').oninput=e=>{store.vol=+e.target.value;save();if(!IOS&&!fadeIv&&slots[0].player&&liveIdx>=0)try{slots[0].player.setVolume(store.vol)}catch(_){}};
 $('#fade').value=store.fade; $('#fv').textContent=store.fade+'s';
