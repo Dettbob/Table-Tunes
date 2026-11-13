@@ -72,7 +72,7 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
       <label class="sl">Music <input id="vol" type="range" min="0" max="100"></label>
       <label class="sl" id="fadeWrap">Fade <input id="fade" type="range" min="1" max="12"><span id="fv"></span></label>
     </div>
-    <div class="hint" id="iosHint" style="display:none;margin-top:8px">iPhone: iOS doesn’t let web pages change YouTube’s volume, so music switches instantly (with a soft swoosh) instead of crossfading.</div>
+    <div class="hint" id="iosHint" style="display:none;margin-top:8px">iPhone: iOS doesn’t let web pages change YouTube’s volume (or start a second video by themselves), so the music switches with a soft swell to cover the gap instead of crossfading.</div>
   </div>
 
   <div class="grid" id="grid"></div>
@@ -134,6 +134,7 @@ if(location.protocol==='file:'){const b=$('#banner');b.style.display='block';b.t
 
 /* ================= YouTube music (two slots) ================= */
 const slots=[0,1].map(()=>({player:null,cat:null,gain:0,target:0,prev:0,pending:false,fresh:false,tok:0,lastVol:-1}));
+const NP=IOS?1:2;   /* iPhone: one player only — a 2nd iframe can't start without its own tap */
 let liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false;
 
 function ensure(){
@@ -143,9 +144,9 @@ function ensure(){
       let n=0;
       const pv={playsinline:1,controls:0,rel:0,disablekb:1,enablejsapi:1};
       if(/^https?:/.test(location.protocol)) pv.origin=location.origin;
-      slots.forEach((s,i)=>{
+      slots.slice(0,NP).forEach((s,i)=>{
         s.player=new YT.Player('p'+i,{width:'100%',height:'100%',playerVars:pv,events:{
-          onReady:()=>{if(++n===2){playersReady=true;res()}},
+          onReady:()=>{if(++n===NP){playersReady=true;res()}},
           onStateChange:e=>onState(i,e),
           onError:e=>onErr(i,e.data)}});
       });
@@ -181,7 +182,7 @@ function commit(i){
   s.pending=false;
   if(IOS){
     slots.forEach((o,j)=>{if(j!==i){o.target=0;o.gain=0;o.prev=0;try{o.player.pauseVideo()}catch(e){}}});
-    s.gain=1;s.target=1;whoosh();
+    s.gain=1;s.target=1;
   }else{
     slots.forEach((o,j)=>{if(j!==i) o.target=0});
     s.target=1;
@@ -202,12 +203,14 @@ async function activate(id){
 
   let i=slots.findIndex((s,k)=>s.cat===id&&k!==liveIdx);
   if(i<0) i=(liveIdx===0)?1:0;
+  if(IOS) i=0;
   const s=slots[i]; s.tok=tok; s.pending=true;
   if(s.cat===id){
     if(s.player.getPlayerState()===1) commit(i); else s.player.playVideo();
   }else{
     s.cat=id; s.fresh=true; s.gain=0; s.target=0; s.prev=0; s.lastVol=-1;
     if(!IOS) s.player.setVolume(0);
+    if(IOS&&liveIdx>=0) whoosh();
     s.player.loadPlaylist({list:ids[Math.floor(Math.random()*ids.length)],listType:'playlist'});
   }
   render();
@@ -435,9 +438,10 @@ function toggleSfx(def){
 function whoosh(){
   if(!actx||!IOS||!store.whoosh) return;
   const t=actx.currentTime,s=actx.createBufferSource();s.buffer=noiseBuf;
-  const b=bq('bandpass',300,1.2);b.frequency.setValueAtTime(300,t);b.frequency.exponentialRampToValueAtTime(2200,t+.8);
-  const g=actx.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(1.4,t+.35);g.gain.linearRampToValueAtTime(0,t+.9);
-  s.connect(b);b.connect(g);g.connect(sfxMaster);s.start(t,0);s.stop(t+1);
+  const b=bq('bandpass',220,1);b.frequency.setValueAtTime(220,t);b.frequency.exponentialRampToValueAtTime(1800,t+2.4);
+  const lp=bq('lowpass',2600,.5),g=actx.createGain();
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(2.2,t+1.1);g.gain.linearRampToValueAtTime(0,t+2.6);
+  s.connect(b);b.connect(lp);lp.connect(g);g.connect(sfxMaster);s.start(t,0);s.stop(t+2.7);
 }
 
 /* ================= UI ================= */
@@ -516,7 +520,7 @@ $('#ytAdd').onclick=()=>{
   store.yt.push({id:'y'+uid(),name,url});save();$('#ytName').value='';$('#ytUrl').value='';renderSfx();toast('Added “'+name+'”');
 };
 $('#whoosh').checked=store.whoosh; $('#whoosh').onchange=e=>{store.whoosh=e.target.checked;save()};
-if(IOS){$('#fadeWrap').style.display='none';$('#iosHint').style.display='block';$('#vol').closest('label').style.display='none'}
+if(IOS){$('#p1').closest('.v').style.display='none';$('#fadeWrap').style.display='none';$('#iosHint').style.display='block';$('#vol').closest('label').style.display='none'}
 addEventListener('keydown',e=>{
   if(/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if(e.key>='1'&&e.key<='9'){const c=store.cats[+e.key-1];if(c)activate(c.id)}
