@@ -86,7 +86,7 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
       <button id="sfxAdd">+ Add sound file</button>
       <input id="sfxFile" type="file" accept="audio/*" multiple hidden>
     </div>
-    <div class="hint" style="margin-top:8px">Built-in sounds are soft, generated textures. For realistic ones, add your own: a sound file, or a YouTube video/playlist (e.g. “battle ambience”, “tavern ambience”) below.</div>
+    <div class="hint" style="margin-top:8px">Recorded ambience loops seamlessly. You can also add your own: a sound file, or a YouTube video/playlist, below.</div>
     <details style="background:none;border:none;padding:0;margin-top:6px"><summary>+ Add a YouTube sound</summary>
       <div class="row" style="border:none">
         <input type="text" id="ytName" placeholder="Name (e.g. Tavern)">
@@ -142,7 +142,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v10 · 13 Nov 18:10';
+const BUILD='v11 · 13 Nov 18:40';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -470,12 +470,45 @@ function buildBattle(out,rig){
   rig.every(()=>{drum(bus,.55);setTimeout(()=>{if(!rig.dead)drum(bus,.38)},420)},3200,5200,1500);
 }
 const BUILT=[
-  {id:'rain',name:'Soft rain',icon:'🌧',build:buildRain},
-  {id:'river',name:'Brook',icon:'🌊',build:buildRiver},
-  {id:'storm',name:'Distant thunderstorm',icon:'⛈',build:buildStorm},
-  {id:'fire',name:'Hearth fire',icon:'🔥',build:buildFire},
-  {id:'wind',name:'Gentle wind',icon:'🍃',build:buildWind},
-  {id:'battle',name:'Distant battle',icon:'⚔️',build:buildBattle}];
+  {id:'rain',name:'Rain',icon:'🌧',file:'sfx/rain.mp3'},
+  {id:'thunder',name:'Thunder',icon:'⛈',file:'sfx/thunder.mp3'},
+  {id:'river',name:'River',icon:'🌊',file:'sfx/river.mp3'},
+  {id:'campfire',name:'Campfire',icon:'🏕',file:'sfx/campfire.mp3'},
+  {id:'bigfire',name:'Big fire',icon:'🔥',file:'sfx/big-fire.mp3'},
+  {id:'wind',name:'Wind',icon:'🍃',file:'sfx/wind.mp3'},
+  {id:'winterwind',name:'Winter wind',icon:'❄️',file:'sfx/winter-wind.mp3'},
+  {id:'sword',name:'Sword fight',icon:'⚔️',file:'sfx/sword-fight.mp3'},
+  {id:'drums',name:'War drums',icon:'🥁',file:'sfx/war-drums.mp3'},
+  {id:'haunted',name:'Haunted',icon:'🏚',file:'sfx/haunted.mp3'},
+  {id:'horror',name:'Creepy horror',icon:'👻',file:'sfx/creepy-horror.mp3'}];
+/* recorded sounds: fetched once, then looped seamlessly with overlapping equal-power crossfades */
+async function loadFile(url){
+  if(bufCache[url]) return bufCache[url];
+  const r=await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status);
+  const ab=await r.arrayBuffer();
+  return bufCache[url]=await new Promise((res,rej)=>actx.decodeAudioData(ab,res,rej));
+}
+function loopBuf(buf,out,rig){
+  const dur=buf.duration, xf=Math.min(2.5,dur*.3), step=dur-xf, N=64;
+  const up=new Float32Array(N),dn=new Float32Array(N);
+  for(let i=0;i<N;i++){const x=i/(N-1);up[i]=Math.sin(x*Math.PI/2);dn[i]=Math.cos(x*Math.PI/2)}
+  let next=actx.currentTime+.05,first=true;
+  const sched=()=>{
+    if(rig.dead) return;
+    while(next<actx.currentTime+90){
+      const s=actx.createBufferSource();s.buffer=buf;const g=actx.createGain();
+      s.connect(g);g.connect(out);
+      if(first) g.gain.setValueAtTime(1,next); else g.gain.setValueCurveAtTime(up,next,xf);
+      g.gain.setValueCurveAtTime(dn,next+dur-xf,xf);
+      s.start(next);s.stop(next+dur+.05);
+      rig.nodes.push(s);
+      s.onended=()=>{const i=rig.nodes.indexOf(s);if(i>=0)rig.nodes.splice(i,1);try{g.disconnect()}catch(e){}};
+      first=false;next+=step;
+    }
+    rig.timers.push(setTimeout(sched,15000));
+  };
+  sched();
+}
 const allSfx=()=>BUILT.concat(store.custom.map(c=>({id:c.id,name:c.name,icon:'🎵',custom:true,removable:true})),
   (store.yt||[]).map(c=>({id:c.id,name:c.name,icon:'▶️',yt:true,removable:true})));
 const sfxVol=id=>(store.sfx[id]&&store.sfx[id].vol!=null)?store.sfx[id].vol:.5;
@@ -497,6 +530,9 @@ async function sfxOn(id){
     if(def.custom){
       const buf=await loadBuf(id); if(!buf) throw new Error('missing');
       const s=actx.createBufferSource();s.buffer=buf;s.loop=true;s.connect(out);s.start();rig.add(s);
+    }else if(def.file){
+      const buf=await loadFile(def.file); if(rig.dead||live[id]&&live[id].rig!==rig) return;
+      loopBuf(buf,out,rig);
     }else def.build(out,rig);
   }catch(e){toast('Could not start “'+def.name+'”');sfxOff(id);return}
   out.gain.setTargetAtTime(sfxVol(id),actx.currentTime,1.2);
