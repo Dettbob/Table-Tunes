@@ -145,7 +145,7 @@ function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
 let playingCat=null,lastErr='';
-const BUILD='v5 · 13 Nov 16:15';
+const BUILD='v6 · 13 Nov 16:35';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad mode (1 player)':'desktop mode (2 players, crossfade)'));
 let liveIdx=-1,switchTok=0,wantCat=null,paused=false,ytReady=null,playersReady=false;
@@ -175,21 +175,48 @@ function onErr(i,code){
   const msg={2:'invalid playlist link',5:'player error',100:'video/playlist not found or private',101:'owner blocked embedding',150:'owner blocked embedding',153:'YouTube refused this page (needs https, not a local file)'}[code]||'error';
   lastErr=msg+' ('+code+')'; dbg('player'+(i+1)+' ERROR '+lastErr);
   toast('YouTube: '+lastErr);
-  if([100,101,150].includes(code)){try{slots[i].player.nextVideo()}catch(e){}}
+  if([100,101,150].includes(code)&&!slots[i].fresh){try{slots[i].player.nextVideo()}catch(e){}}
 }
 function onState(i,e){
   const s=slots[i];
   dbg('player'+(i+1)+' state: '+(STN[e.data]||e.data));
   if(e.data!==1) return;
-  if(s.fresh){
-    s.fresh=false;
-    try{
-      s.player.setShuffle(true); s.player.setLoop(true);
-      const l=s.player.getPlaylist();
-      if(l&&l.length>1){ s.player.playVideoAt(Math.floor(Math.random()*l.length)); setTimeout(()=>commit(i),3000); return; }
-    }catch(err){}
-  }
+  if(s.fresh) return;          /* a load is in progress: watchLoad() decides when the NEW playlist is really in */
   commit(i);
+}
+/* fingerprint of the playlist a player currently holds (order-independent, so shuffle doesn't matter) */
+function listKey(p){
+  try{const l=p.getPlaylist();if(!l||!l.length)return null;return l.length+'|'+[...l].sort().slice(0,4).join(',')}catch(e){return null}
+}
+const LOAD_TRIES=[
+  (p,lid)=>p.loadPlaylist({list:lid,listType:'playlist'}),
+  (p,lid)=>p.loadPlaylist({list:lid,listType:'playlist',index:0,startSeconds:0}),
+  (p,lid)=>{p.cuePlaylist({list:lid,listType:'playlist'});setTimeout(()=>{try{p.playVideo()}catch(e){}},500)}
+];
+function loadAndWatch(i,tok,lid,attempt){
+  const s=slots[i];
+  if(attempt===0){ s.oldKey=(lid===s.lastLid)?null:listKey(s.player); s.lastLid=lid; }
+  dbg('player'+(i+1)+' load try '+(attempt+1)+' → '+lid+(s.oldKey?'  (replacing list '+s.oldKey.split('|')[0]+' videos)':''));
+  try{LOAD_TRIES[attempt](s.player,lid)}catch(e){dbg('load call threw: '+e.message)}
+  let n=0;
+  const iv=setInterval(()=>{
+    if(switchTok!==tok||!s.pending){clearInterval(iv);return}
+    n++;
+    const key=listKey(s.player);
+    if(key&&key!==s.oldKey){
+      clearInterval(iv);
+      dbg('player'+(i+1)+' NEW playlist confirmed ('+key.split('|')[0]+' videos)');
+      s.fresh=false;
+      try{s.player.setShuffle(true);s.player.setLoop(true);const l=s.player.getPlaylist();
+        if(l&&l.length>1)s.player.playVideoAt(Math.floor(Math.random()*l.length))}catch(e){}
+      setTimeout(()=>commit(i),2500);
+      return;
+    }
+    if(n>=12){
+      clearInterval(iv);
+      if(attempt+1<LOAD_TRIES.length){dbg('player'+(i+1)+' still on the OLD playlist after 5s — retrying a different way');loadAndWatch(i,tok,lid,attempt+1)}
+    }
+  },400);
 }
 function commit(i){
   const s=slots[i];
@@ -223,20 +250,20 @@ async function activate(id){
   dbg('tap “'+cat.name+'” → using player'+(i+1));
   setTimeout(()=>{
     if(switchTok!==tok||!s.pending) return;
-    s.pending=false;
+    s.pending=false; s.fresh=false;
     if(IOS){s.cat=playingCat}else{s.cat=null;try{s.player.pauseVideo()}catch(e){}}
     wantCat=playingCat; render();
     dbg('TIMEOUT: “'+cat.name+'” never started playing');
     showBanner('“'+cat.name+'” didn’t start'+(lastErr?' — YouTube said: '+lastErr:' — YouTube gave no error')+'. Open “Debug log” at the bottom of the page and send me a screenshot. Quick test: paste that playlist link into the other category instead.');
-  },9000);
+  },19000);
   if(s.cat===id){
     if(s.player.getPlayerState()===1) commit(i); else s.player.playVideo();
   }else{
     s.cat=id; s.fresh=true; s.gain=0; s.target=0; s.prev=0; s.lastVol=-1;
     if(!IOS) s.player.setVolume(0);
     if(IOS&&liveIdx>=0) whoosh();
-    const lid=ids[Math.floor(Math.random()*ids.length)]; dbg('player'+(i+1)+' loadPlaylist '+lid);
-    s.player.loadPlaylist({list:lid,listType:'playlist'});
+    const lid=ids[Math.floor(Math.random()*ids.length)];
+    loadAndWatch(i,tok,lid,0);
   }
   render();
 }
