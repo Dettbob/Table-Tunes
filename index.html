@@ -47,7 +47,9 @@ details{background:var(--card);border:1px solid var(--line);border-radius:18px;p
 summary{cursor:pointer;padding:12px 0;color:var(--mute)}
 #yt{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 #yt .v{aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}
-#yt iframe{width:100%;height:100%;display:block}
+#yt iframe,#ytAmb iframe{width:100%;height:100%;display:block}
+#ytAmb{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+#ytAmb .v{aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden}
 #banner{display:none;background:#5a2323;border:1px solid #a33;border-radius:12px;padding:10px 14px;margin-bottom:14px;font-size:14px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#000d;padding:10px 16px;border-radius:12px;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw;z-index:9}
 #toast.show{opacity:1}
@@ -84,7 +86,14 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
       <button id="sfxAdd">+ Add sound file</button>
       <input id="sfxFile" type="file" accept="audio/*" multiple hidden>
     </div>
-    <div class="hint" style="margin-top:8px">Built-in sounds are generated live (no downloads). The battle shouts are synthetic and rough — add a real recording with “+ Add sound file” for better ones.</div>
+    <div class="hint" style="margin-top:8px">Built-in sounds are soft, generated textures. For realistic ones, add your own: a sound file, or a YouTube video/playlist (e.g. “battle ambience”, “tavern ambience”) below.</div>
+    <details style="background:none;border:none;padding:0;margin-top:6px"><summary>+ Add a YouTube sound</summary>
+      <div class="row" style="border:none">
+        <input type="text" id="ytName" placeholder="Name (e.g. Tavern)">
+        <input type="text" id="ytUrl" placeholder="YouTube video or playlist link">
+        <div class="ctl" style="margin:0"><button id="ytAdd">Add</button></div>
+        <div class="hint">Plays alongside the music. Volume sliders work on computers; iPhone can’t set YouTube volume from a web page and may allow only one YouTube video at a time, so there it can pause the music.</div>
+      </div></details>
   </div>
 
   <details id="ed">
@@ -98,6 +107,7 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
   <details open>
     <summary>Players</summary>
     <div id="yt"><div class="v"><div id="p0"></div></div><div class="v"><div id="p1"></div></div></div>
+    <div id="ytAmb"></div>
   </details>
 </main>
 <div id="toast"></div>
@@ -110,7 +120,7 @@ const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='Mac
 
 let store={};
 try{store=JSON.parse(localStorage.getItem('tt.v1'))||{}}catch(e){}
-store=Object.assign({fade:4,vol:80,sfxVol:80,whoosh:true,sfx:{},custom:[],cats:[
+store=Object.assign({fade:4,vol:80,sfxVol:80,whoosh:true,sfx:{},custom:[],yt:[],cats:[
   {id:uid(),name:'Board game chill',color:'#4aa8a0',text:''},
   {id:uid(),name:'Intense',color:'#e0533d',text:''}]},store);
 const save=()=>{try{localStorage.setItem('tt.v1',JSON.stringify(store))}catch(e){}};
@@ -224,8 +234,9 @@ setInterval(()=>{
 },1000);
 
 /* ================= Ambience (Web Audio, generated live) ================= */
-let actx=null,sfxMaster=null,noiseBuf=null,whiteBuf=null,silentEl=null;
-const live={}, bufCache={};
+let actx=null,sfxMaster=null,noiseBuf=null,whiteBuf=null,impBuf=null,silentEl=null;
+const live={}, bufCache={}, ytLive={};
+const MASTER=1.2;
 
 function silentWavUrl(){
   const n=8000,b=new ArrayBuffer(44+n),v=new DataView(b),w=(o,s)=>[...s].forEach((c,k)=>v.setUint8(o+k,c.charCodeAt(0)));
@@ -241,13 +252,15 @@ function makeNoise(){
     for(let i=0;i<len;i++){const x=Math.random()*2-1;b0=.99886*b0+x*.0555179;b1=.99332*b1+x*.0750759;b2=.969*b2+x*.153852;b3=.8665*b3+x*.3104856;b4=.55*b4+x*.5329522;b5=-.7616*b5-x*.016898;
       d[i]=(b0+b1+b2+b3+b4+b5+b6+x*.5362)*.11;b6=x*.115926}}
   noiseBuf=pink;whiteBuf=white;
+  const L=Math.floor(actx.sampleRate*2.8);impBuf=actx.createBuffer(2,L,actx.sampleRate);
+  for(let c=0;c<2;c++){const d=impBuf.getChannelData(c);for(let i=0;i<L;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/L,2.4)}
 }
 function unlockAudio(){
   try{
     if(!actx){
       const AC=window.AudioContext||window.webkitAudioContext; actx=new AC();
       const comp=actx.createDynamicsCompressor(); sfxMaster=actx.createGain();
-      sfxMaster.gain.value=store.sfxVol/100*2.2; sfxMaster.connect(comp); comp.connect(actx.destination); makeNoise();
+      sfxMaster.gain.value=store.sfxVol/100*MASTER; sfxMaster.connect(comp); comp.connect(actx.destination); makeNoise();
     }
     if(actx.state!=='running') actx.resume();
     if(!silentEl){silentEl=document.createElement('audio');silentEl.src=silentWavUrl();silentEl.loop=true;silentEl.setAttribute('playsinline','');silentEl.volume=.01;silentEl.play().catch(()=>{})}
@@ -265,66 +278,89 @@ function burst({f=2000,q=1,type='bandpass',amp=.3,dur=.05,out}){
   const s=actx.createBufferSource();s.buffer=whiteBuf;const fl=bq(type,f,q),g=actx.createGain(),t=actx.currentTime;
   g.gain.setValueAtTime(amp,t);g.gain.exponentialRampToValueAtTime(.001,t+dur);
   s.connect(fl);fl.connect(g);g.connect(out);s.start(t,Math.random()*3);s.stop(t+dur+.05)}
+/* a noise layer: band-limited, with slow swelling so it never feels static */
+function layer(out,rig,{type='bandpass',f=500,q=.7,lp=0,gain=1,swell=0,rate=.08,fmod=0,frate=.07}){
+  const n=nz(rig),b=bq(type,f,q),g=gn(gain);n.connect(b);let last=b;
+  if(lp){const l=bq('lowpass',lp,.5);b.connect(l);last=l}
+  last.connect(g);g.connect(out);
+  if(swell) lfo(rig,g.gain,rate,gain*swell);
+  if(fmod) lfo(rig,b.frequency,frate,fmod);
+  return g;
+}
 
 function buildRain(out,rig,k=1){
-  const n=nz(rig),hp=bq('highpass',700),lp=bq('lowpass',9000),g=gn(1.1*k);n.connect(hp);hp.connect(lp);lp.connect(g);g.connect(out);
-  const n2=nz(rig),b2=bq('bandpass',260,.6),g2=gn(.9*k);n2.connect(b2);b2.connect(g2);g2.connect(out);
-  rig.every(()=>burst({f:3000+Math.random()*4000,q:2,amp:.1*k,dur:.02,out}),30,130);
+  layer(out,rig,{type:'highpass',f:500,lp:4800,gain:.85*k,swell:.12,rate:.05});
+  layer(out,rig,{f:260,q:.5,lp:900,gain:.5*k,swell:.2,rate:.04});
+  rig.every(()=>burst({f:2400+Math.random()*3200,q:1.2,amp:.03*k,dur:.03,out}),70,260);
+}
+function bubble(out){
+  const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain(),f=450+Math.random()*900;
+  o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*1.7,t+.08);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.015+Math.random()*.025,t+.012);g.gain.exponentialRampToValueAtTime(.0001,t+.11);
+  o.connect(g);g.connect(out);o.start(t);o.stop(t+.14);
 }
 function buildRiver(out,rig){
-  const n=nz(rig),b=bq('bandpass',550,.7),lp=bq('lowpass',2600),g=gn(1.5);n.connect(b);b.connect(lp);lp.connect(g);g.connect(out);lfo(rig,b.frequency,.17,260);lfo(rig,g.gain,.23,.35);
-  const n2=nz(rig),b2=bq('bandpass',1500,1),g2=gn(.8);n2.connect(b2);b2.connect(g2);g2.connect(out);lfo(rig,b2.frequency,.31,500);
-  const n3=nz(rig),l3=bq('lowpass',200),g3=gn(1.2);n3.connect(l3);l3.connect(g3);g3.connect(out);
+  layer(out,rig,{f:420,q:.6,lp:1500,gain:1.1,swell:.18,rate:.11,fmod:110,frate:.07});
+  layer(out,rig,{f:1100,q:.9,lp:2600,gain:.3,swell:.3,rate:.17,fmod:260,frate:.13});
+  rig.every(()=>bubble(out),140,650);
 }
 function buildWind(out,rig){
-  const n=nz(rig),b=bq('bandpass',380,1.4),g=gn(2);n.connect(b);b.connect(g);g.connect(out);lfo(rig,b.frequency,.07,220);lfo(rig,g.gain,.11,.9);
+  layer(out,rig,{f:320,q:.8,lp:900,gain:1.1,swell:.45,rate:.06,fmod:130,frate:.05});
 }
 function buildFire(out,rig){
-  const n=nz(rig),lp=bq('lowpass',280),g=gn(1.8);n.connect(lp);lp.connect(g);g.connect(out);lfo(rig,g.gain,.4,.4);
+  layer(out,rig,{type:'lowpass',f:200,q:.5,gain:.9,swell:.25,rate:.3});
+  layer(out,rig,{f:650,q:.5,lp:1500,gain:.2,swell:.4,rate:.17});
   rig.every(()=>{
-    burst({f:1500+Math.random()*3500,q:.8,amp:.2+Math.random()*.5,dur:.01+Math.random()*.04,out});
-    if(Math.random()<.25) burst({f:2500+Math.random()*3000,q:1,amp:.3,dur:.015,out});
-    if(Math.random()<.06) burst({f:220,q:1.2,amp:.9,dur:.09,out});
-  },40,260);
+    burst({f:1200+Math.random()*2600,q:.9,amp:.07+Math.random()*.2,dur:.006+Math.random()*.03,out});
+    if(Math.random()<.3) burst({f:1800+Math.random()*2200,q:1,amp:.1,dur:.012,out});
+    if(Math.random()<.05) burst({f:170,q:1,amp:.45,dur:.08,out});
+  },90,520);
 }
-function rumble(out){
+function thunder(out){
   const t=actx.currentTime,s=actx.createBufferSource();s.buffer=noiseBuf;s.loop=true;
-  const lp=bq('lowpass',600,.8);lp.frequency.setValueAtTime(600,t);lp.frequency.exponentialRampToValueAtTime(70,t+5);
-  const g=actx.createGain(),dur=3.5+Math.random()*3;
-  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(3,t+.35+Math.random()*.6);g.gain.exponentialRampToValueAtTime(.001,t+dur);
+  const lp=bq('lowpass',240,.7);lp.frequency.setValueAtTime(240,t);lp.frequency.exponentialRampToValueAtTime(55,t+8);
+  const g=actx.createGain(),dur=6+Math.random()*4;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(1.5,t+1.2+Math.random()*.8);g.gain.exponentialRampToValueAtTime(.001,t+dur);
   s.connect(lp);lp.connect(g);g.connect(out);s.start(t,Math.random()*3);s.stop(t+dur+.1);
-  if(Math.random()<.6) burst({f:1800,q:.5,type:'highpass',amp:.5,dur:.18,out});
 }
-function buildStorm(out,rig){buildRain(out,rig,1.25);rig.every(()=>rumble(out),7000,22000,2500)}
-function clink(out){
-  const t=actx.currentTime,f=1300+Math.random()*2600,dur=.25+Math.random()*.6,amp=.05+Math.random()*.12;
-  [[1,.5],[2.76,.35],[5.4,.2],[8.93,.1]].forEach(([m,a])=>{
+function buildStorm(out,rig){buildRain(out,rig,.9);rig.every(()=>thunder(out),16000,42000,4000)}
+
+/* distant battle: heavy reverb + low-pass = "over the hill", no synthetic voices */
+function farBus(out,rig){
+  const rv=actx.createConvolver();rv.buffer=impBuf;const wet=gn(.9);rv.connect(out);wet.connect(rv);
+  const dry=gn(.3);dry.connect(out);return {wet,dry};
+}
+function clang(bus){
+  const t=actx.currentTime,f=900+Math.random()*1600,dur=.18+Math.random()*.4,amp=.07+Math.random()*.12;
+  const lp=bq('lowpass',3200,.5);lp.connect(bus.wet);lp.connect(bus.dry);
+  [[1,.5],[2.76,.3],[5.4,.15]].forEach(([m,a])=>{
     const o=actx.createOscillator(),g=actx.createGain();o.frequency.value=f*m;
     g.gain.setValueAtTime(amp*a,t);g.gain.exponentialRampToValueAtTime(.0005,t+dur/(m>3?2:1));
-    o.connect(g);g.connect(out);o.start(t);o.stop(t+dur+.05)});
-  burst({f:3500,q:.7,type:'highpass',amp:.35,dur:.03,out});
+    o.connect(g);g.connect(lp);o.start(t);o.stop(t+dur+.05)});
 }
-function shout(out){
-  const t=actx.currentTime,dur=.5+Math.random()*.7,o=actx.createOscillator();o.type='sawtooth';
-  const f0=105+Math.random()*110;o.frequency.setValueAtTime(f0,t);o.frequency.linearRampToValueAtTime(f0*1.35,t+dur*.35);o.frequency.linearRampToValueAtTime(f0*.9,t+dur);
-  const g=actx.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.5,t+.07);g.gain.setValueAtTime(.5,t+dur*.6);g.gain.linearRampToValueAtTime(0,t+dur);
-  const f1=bq('bandpass',650+Math.random()*250,6),f2=bq('bandpass',1100+Math.random()*300,7),lp=bq('lowpass',3200);
-  o.connect(f1);o.connect(f2);f1.connect(g);f2.connect(g);g.connect(lp);lp.connect(out);o.start(t);o.stop(t+dur+.05);
+function drum(bus,amp=.35){
+  const t=actx.currentTime,o=actx.createOscillator(),g=actx.createGain(),lp=bq('lowpass',220,.5);
+  o.frequency.setValueAtTime(80,t);o.frequency.exponentialRampToValueAtTime(44,t+.35);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(amp,t+.012);g.gain.exponentialRampToValueAtTime(.0001,t+.55);
+  o.connect(g);g.connect(lp);lp.connect(bus.wet);lp.connect(bus.dry);o.start(t);o.stop(t+.6);
 }
 function buildBattle(out,rig){
-  const n=nz(rig),b=bq('bandpass',900,.6),g=gn(.9);n.connect(b);b.connect(g);g.connect(out);lfo(rig,g.gain,.4,.35);
-  rig.every(()=>{const c=1+Math.floor(Math.random()*4);for(let i=0;i<c;i++)setTimeout(()=>{if(!rig.dead)clink(out)},i*(70+Math.random()*120))},350,1800);
-  rig.every(()=>shout(out),1300,4200,1500);
+  const bus=farBus(out,rig);
+  const crowd=layer(bus.dry,rig,{f:380,q:.5,lp:1100,gain:1.7,swell:.5,rate:.09});
+  const far=layer(bus.wet,rig,{f:520,q:.5,lp:1400,gain:1.3,swell:.6,rate:.06});
+  rig.every(()=>{const c=1+Math.floor(Math.random()*3);for(let i=0;i<c;i++)setTimeout(()=>{if(!rig.dead)clang(bus)},i*(110+Math.random()*220))},700,2600);
+  rig.every(()=>{drum(bus,.55);setTimeout(()=>{if(!rig.dead)drum(bus,.38)},420)},3200,5200,1500);
 }
 const BUILT=[
-  {id:'rain',name:'Rain',icon:'🌧',build:buildRain},
-  {id:'river',name:'River',icon:'🌊',build:buildRiver},
-  {id:'storm',name:'Thunderstorm',icon:'⛈',build:buildStorm},
-  {id:'fire',name:'Fire',icon:'🔥',build:buildFire},
-  {id:'wind',name:'Wind',icon:'🍃',build:buildWind},
-  {id:'battle',name:'Sword battle',icon:'⚔️',build:buildBattle}];
-const allSfx=()=>BUILT.concat(store.custom.map(c=>({id:c.id,name:c.name,icon:'🎵',custom:true})));
-const sfxVol=id=>(store.sfx[id]&&store.sfx[id].vol!=null)?store.sfx[id].vol:.6;
+  {id:'rain',name:'Soft rain',icon:'🌧',build:buildRain},
+  {id:'river',name:'Brook',icon:'🌊',build:buildRiver},
+  {id:'storm',name:'Distant thunderstorm',icon:'⛈',build:buildStorm},
+  {id:'fire',name:'Hearth fire',icon:'🔥',build:buildFire},
+  {id:'wind',name:'Gentle wind',icon:'🍃',build:buildWind},
+  {id:'battle',name:'Distant battle',icon:'⚔️',build:buildBattle}];
+const allSfx=()=>BUILT.concat(store.custom.map(c=>({id:c.id,name:c.name,icon:'🎵',custom:true,removable:true})),
+  (store.yt||[]).map(c=>({id:c.id,name:c.name,icon:'▶️',yt:true,removable:true})));
+const sfxVol=id=>(store.sfx[id]&&store.sfx[id].vol!=null)?store.sfx[id].vol:.5;
 
 const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open('tt-audio',1);r.onupgradeneeded=()=>r.result.createObjectStore('f');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 const idbPut=async(k,v)=>{const d=await idb();return new Promise((res,rej)=>{const t=d.transaction('f','readwrite');t.objectStore('f').put(v,k);t.oncomplete=res;t.onerror=()=>rej(t.error)})};
@@ -345,19 +381,63 @@ async function sfxOn(id){
       const s=actx.createBufferSource();s.buffer=buf;s.loop=true;s.connect(out);s.start();rig.add(s);
     }else def.build(out,rig);
   }catch(e){toast('Could not start “'+def.name+'”');sfxOff(id);return}
-  out.gain.setTargetAtTime(sfxVol(id),actx.currentTime,.5);
+  out.gain.setTargetAtTime(sfxVol(id),actx.currentTime,1.2);
 }
 function sfxOff(id){
   const l=live[id]; if(!l) return; delete live[id];
-  l.out.gain.setTargetAtTime(0,actx.currentTime,.4);
-  setTimeout(()=>{l.rig.stop();try{l.out.disconnect()}catch(e){}},2200); renderSfx();
+  l.out.gain.setTargetAtTime(0,actx.currentTime,.7);
+  setTimeout(()=>{l.rig.stop();try{l.out.disconnect()}catch(e){}},3500); renderSfx();
+}
+
+/* ---- ambience that plays from YouTube (own player per sound, mixes with the music) ---- */
+function ytIds(url){
+  const l=(url||'').match(/[?&]list=([\w-]+)/), v=(url||'').match(/(?:[?&]v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/);
+  return {list:l&&!l[1].startsWith('RD')?l[1]:null,video:v?v[1]:null};
+}
+function ytFade(rec,to,ms,done){
+  clearInterval(rec.fade);
+  let from=0;try{from=rec.player.getVolume()}catch(e){}
+  const steps=Math.max(1,Math.round(ms/50));let i=0;
+  rec.fade=setInterval(()=>{i++;const v=Math.round(from+(to-from)*i/steps);try{rec.player.setVolume(v)}catch(e){}
+    if(i>=steps){clearInterval(rec.fade);if(done)done()}},50);
+}
+async function ytOn(id){
+  unlockAudio();
+  const def=(store.yt||[]).find(x=>x.id===id); if(!def||ytLive[id]) return;
+  const ids=ytIds(def.url); if(!ids.list&&!ids.video){toast('That YouTube link isn’t valid');return}
+  try{await ensure()}catch(e){toast(e.message);return}
+  const host=document.createElement('div');host.className='v';const inner=document.createElement('div');host.appendChild(inner);$('#ytAmb').appendChild(host);
+  const rec={host,player:null,fade:null,started:false};ytLive[id]=rec;renderSfx();
+  const pv={playsinline:1,controls:0,rel:0,disablekb:1,enablejsapi:1};
+  if(/^https?:/.test(location.protocol)) pv.origin=location.origin;
+  rec.player=new YT.Player(inner,{width:'100%',height:'100%',playerVars:pv,events:{
+    onReady:e=>{try{e.target.setVolume(IOS?100:0)}catch(_){}
+      if(ids.list)e.target.loadPlaylist({list:ids.list,listType:'playlist'});else e.target.loadVideoById(ids.video)},
+    onStateChange:ev=>{
+      if(ev.data===1&&!rec.started){rec.started=true;
+        if(ids.list){try{ev.target.setShuffle(true);ev.target.setLoop(true)}catch(_){}}
+        if(!IOS)ytFade(rec,Math.round(sfxVol(id)*100),2500);
+        if(IOS)setTimeout(()=>{if(slots.some(s=>s.player&&s.player.getPlayerState&&s.player.getPlayerState()===2&&!paused))toast('iPhone paused the music to play this sound — iOS may allow only one YouTube video at a time')},2500);}
+      if(ev.data===0&&!ids.list){ev.target.seekTo(0);ev.target.playVideo()}},
+    onError:e=>{toast('YouTube sound error ('+e.data+')');ytOff(id,true)}}});
+}
+function ytOff(id,instant){
+  const rec=ytLive[id]; if(!rec) return; delete ytLive[id];
+  const kill=()=>{try{rec.player.destroy()}catch(e){}try{rec.host.remove()}catch(e){}};
+  if(instant||IOS||!rec.started){kill()}else ytFade(rec,0,1800,kill);
+  renderSfx();
+}
+function ytIsOn(id){return !!ytLive[id]}
+function toggleSfx(def){
+  if(def.yt) return ytIsOn(def.id)?ytOff(def.id):ytOn(def.id);
+  return live[def.id]?sfxOff(def.id):sfxOn(def.id);
 }
 function whoosh(){
   if(!actx||!IOS||!store.whoosh) return;
   const t=actx.currentTime,s=actx.createBufferSource();s.buffer=noiseBuf;
-  const b=bq('bandpass',300,1.2);b.frequency.setValueAtTime(300,t);b.frequency.exponentialRampToValueAtTime(3000,t+.7);
-  const g=actx.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(3,t+.3);g.gain.linearRampToValueAtTime(0,t+.8);
-  s.connect(b);b.connect(g);g.connect(sfxMaster);s.start(t,0);s.stop(t+.9);
+  const b=bq('bandpass',300,1.2);b.frequency.setValueAtTime(300,t);b.frequency.exponentialRampToValueAtTime(2200,t+.8);
+  const g=actx.createGain();g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(1.4,t+.35);g.gain.linearRampToValueAtTime(0,t+.9);
+  s.connect(b);b.connect(g);g.connect(sfxMaster);s.start(t,0);s.stop(t+1);
 }
 
 /* ================= UI ================= */
@@ -378,14 +458,17 @@ function render(){
 function renderSfx(){
   const l=$('#sfxList'); l.innerHTML='';
   allSfx().forEach(def=>{
-    const on=!!live[def.id],d=document.createElement('div'); d.className='sfx';
-    d.innerHTML='<button class="sb'+(on?' on':'')+'">'+def.icon+' '+esc(def.name)+'</button><input type="range" min="0" max="100" value="'+Math.round(sfxVol(def.id)*100)+'">'+(def.custom?'<button class="x" title="Remove">✕</button>':'<span></span>');
-    d.querySelector('.sb').onclick=()=>on?sfxOff(def.id):sfxOn(def.id);
+    const on=def.yt?ytIsOn(def.id):!!live[def.id],d=document.createElement('div'); d.className='sfx';
+    d.innerHTML='<button class="sb'+(on?' on':'')+'">'+def.icon+' '+esc(def.name)+'</button><input type="range" min="0" max="100" value="'+Math.round(sfxVol(def.id)*100)+'">'+(def.removable?'<button class="x" title="Remove">✕</button>':'<span></span>');
+    d.querySelector('.sb').onclick=()=>toggleSfx(def);
     d.querySelector('input').oninput=e=>{
       const v=+e.target.value/100; store.sfx[def.id]=Object.assign(store.sfx[def.id]||{},{vol:v}); save();
-      if(live[def.id]&&actx) live[def.id].out.gain.setTargetAtTime(v,actx.currentTime,.05)};
+      if(def.yt){const r=ytLive[def.id];if(r&&!IOS)try{r.player.setVolume(Math.round(v*100))}catch(_){}}
+      else if(live[def.id]&&actx) live[def.id].out.gain.setTargetAtTime(v,actx.currentTime,.05)};
     const x=d.querySelector('.x'); if(x) x.onclick=async()=>{
-      if(!confirm('Remove “'+def.name+'”?')) return; sfxOff(def.id);
+      if(!confirm('Remove “'+def.name+'”?')) return;
+      if(def.yt){ytOff(def.id,true);store.yt=store.yt.filter(c=>c.id!==def.id);save();renderSfx();return}
+      sfxOff(def.id);
       store.custom=store.custom.filter(c=>c.id!==def.id); delete bufCache[def.id]; save(); await idbDel(def.id); renderSfx()};
     l.appendChild(d);
   });
@@ -417,8 +500,8 @@ $('#app').onclick=()=>{
 $('#vol').value=store.vol; $('#vol').oninput=e=>{store.vol=+e.target.value;slots.forEach(s=>s.lastVol=-1);save()};
 $('#fade').value=store.fade; $('#fv').textContent=store.fade+'s';
 $('#fade').oninput=e=>{store.fade=+e.target.value;$('#fv').textContent=store.fade+'s';save()};
-$('#sfxVol').value=store.sfxVol; $('#sfxVol').oninput=e=>{store.sfxVol=+e.target.value;save();if(sfxMaster)sfxMaster.gain.setTargetAtTime(store.sfxVol/100*2.2,actx.currentTime,.05)};
-$('#sfxStop').onclick=()=>Object.keys(live).forEach(sfxOff);
+$('#sfxVol').value=store.sfxVol; $('#sfxVol').oninput=e=>{store.sfxVol=+e.target.value;save();if(sfxMaster)sfxMaster.gain.setTargetAtTime(store.sfxVol/100*MASTER,actx.currentTime,.05)};
+$('#sfxStop').onclick=()=>{Object.keys(live).forEach(sfxOff);Object.keys(ytLive).forEach(k=>ytOff(k))};
 $('#sfxAdd').onclick=()=>{unlockAudio();$('#sfxFile').click()};
 $('#sfxFile').onchange=async e=>{
   for(const f of e.target.files){
@@ -426,6 +509,11 @@ $('#sfxFile').onchange=async e=>{
     catch(err){toast('Could not save “'+f.name+'”')}
   }
   e.target.value='';renderSfx();
+};
+$('#ytAdd').onclick=()=>{
+  const name=$('#ytName').value.trim()||'YouTube sound',url=$('#ytUrl').value.trim(),ids=ytIds(url);
+  if(!ids.list&&!ids.video){toast('Paste a normal YouTube video or playlist link');return}
+  store.yt.push({id:'y'+uid(),name,url});save();$('#ytName').value='';$('#ytUrl').value='';renderSfx();toast('Added “'+name+'”');
 };
 $('#whoosh').checked=store.whoosh; $('#whoosh').onchange=e=>{store.whoosh=e.target.checked;save()};
 if(IOS){$('#fadeWrap').style.display='none';$('#iosHint').style.display='block';$('#vol').closest('label').style.display='none'}
