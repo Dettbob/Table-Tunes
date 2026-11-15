@@ -167,7 +167,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v13 · 15 Nov 10:35';
+const BUILD='v14 · 15 Nov 11:30';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -406,11 +406,17 @@ async function pickSong(id){
   const p=curPlayer(); if(!p) return;
   try{
     p.setShuffle(false);shuffleOn=false;shufLabel();
-    await new Promise(r=>setTimeout(r,500));
-    const ix=(p.getPlaylist()||[]).indexOf(id); if(ix<0){toast('Couldn’t find that song');return}
-    p.playVideoAt(ix);paused=false;render();
-    dbg('picked song at position '+ix);
-    setTimeout(fillSongs,900);
+    await new Promise(r=>setTimeout(r,1200));          // let YouTube restore the original order
+    let ok=false;
+    for(let t=0;t<4&&!ok;t++){
+      const ix=(p.getPlaylist()||[]).indexOf(id); if(ix<0) break;
+      p.playVideoAt(ix);paused=false;
+      await new Promise(r=>setTimeout(r,2200));
+      try{ok=p.getVideoData().video_id===id}catch(e){}
+      dbg('picked song, position '+ix+(ok?' ✓':' (retry)'));
+    }
+    if(!ok) toast('Couldn’t switch to that song — tap it again');
+    render(); setTimeout(fillSongs,300);
   }catch(e){toast('Couldn’t switch song')}
 }
 $('#shufBtn').onclick=()=>{const p=curPlayer();if(!p)return;try{shuffleOn=!shuffleOn;p.setShuffle(shuffleOn);shufLabel();setTimeout(fillSongs,700)}catch(e){}};
