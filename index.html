@@ -43,6 +43,9 @@ input[type=text],textarea{width:100%;background:#14151a;color:var(--text);border
 input[type=color]{width:46px;height:40px;border:none;background:none;padding:0}
 textarea{min-height:76px;resize:vertical;font-size:13px}
 .hint{font-size:12px;color:var(--mute)}
+.songlist{max-height:46vh;overflow:auto;margin-bottom:10px}
+.song{display:block;width:100%;text-align:left;padding:9px 10px;margin:0;border:0;border-bottom:1px solid var(--line);background:none;color:inherit;font:inherit;font-size:14px;border-radius:0;cursor:pointer}
+.song.cur{color:var(--c1,#4aa8a0);font-weight:600}.song.cur::before{content:"▶ "}.song.bad{opacity:.45}
 details{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:6px 16px;margin-top:16px}
 summary{cursor:pointer;padding:12px 0;color:var(--mute)}
 #yt{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
@@ -74,6 +77,11 @@ summary{cursor:pointer;padding:12px 0;color:var(--mute)}
     </div>
     <div class="hint" id="iosHint" style="display:none;margin-top:8px">iPhone: iOS doesn’t let web pages change YouTube’s volume (or start a second video by themselves), so the music switches with a soft swell to cover the gap instead of crossfading.</div>
   </div>
+
+  <details id="songs" style="margin-top:0;margin-bottom:16px"><summary>🎵 Songs in this category</summary>
+    <div class="ctl" style="margin-bottom:8px"><button id="shufBtn">🔀 Shuffle: on</button></div>
+    <div id="songList" class="songlist"><div class="hint">Start a category first.</div></div>
+  </details>
 
   <div class="grid" id="grid"></div>
 
@@ -159,7 +167,7 @@ const dbgLines=[];
 function dbg(m){const t=new Date().toTimeString().slice(0,8);dbgLines.unshift(t+'  '+m);dbgLines.length=Math.min(dbgLines.length,60);const el=document.getElementById('dbg');if(el)el.textContent=dbgLines.join('\n')}
 function showBanner(m){const b=$('#banner');b.textContent=m;b.style.display='block'}
 function hideBanner(){if(location.protocol!=='file:')$('#banner').style.display='none'}
-const BUILD='v12 · 13 Nov 18:55';
+const BUILD='v13 · 15 Nov 10:35';
 document.getElementById('ver').textContent=BUILD;
 dbg('build '+BUILD+' · page loaded · '+(IOS?'iPhone/iPad (swell transition)':'desktop (volume-dip transition)'));
 
@@ -320,6 +328,7 @@ function commit(){
   s.pending=false; playingCat=s.cat; lastErr=''; hideBanner();
   liveIdx=0; paused=false;
   dbg('now playing: '+((store.cats.find(c=>c.id===s.cat)||{}).name));
+  shuffleOn=true;shufLabel();if($('#songs').open)setTimeout(fillSongs,1500);
   render();
 }
 async function activate(id){
@@ -365,8 +374,47 @@ function resume(){paused=false;if(liveIdx>=0)try{slots[liveIdx].player.playVideo
 
 setInterval(()=>{
   if(liveIdx<0) return;
-  try{const d=slots[liveIdx].player.getVideoData(); if(d&&d.title) $('#np').textContent=d.title}catch(e){}
+  try{const d=slots[liveIdx].player.getVideoData(); if(d&&d.title) $('#np').textContent=d.title;
+    if(d&&d.video_id){document.querySelectorAll('#songList .song').forEach(b=>b.classList.toggle('cur',b.dataset.id===d.video_id));if(d.title&&titles[d.video_id]==null){titles[d.video_id]=d.title;saveTitles()}}}catch(e){}
 },1000);
+
+/* ---- song list: pick a specific song of the playing category ---- */
+const titles=(()=>{try{return JSON.parse(localStorage.getItem('tt.titles'))||{}}catch(e){return {}}})();
+const saveTitles=()=>{try{localStorage.setItem('tt.titles',JSON.stringify(titles))}catch(e){}};
+let shuffleOn=true,songGen=0;
+const curPlayer=()=>liveIdx>=0?slots[liveIdx].player:null;
+function shufLabel(){$('#shufBtn').textContent='🔀 Shuffle: '+(shuffleOn?'on':'off')}
+async function fillSongs(){
+  const box=$('#songList'),p=curPlayer(),gen=++songGen; let ids=[];
+  try{ids=(p&&p.getPlaylist())||[]}catch(e){}
+  if(!ids.length){box.innerHTML='<div class="hint">Start a category first.</div>';return}
+  box.innerHTML='';
+  const rows={};
+  ids.forEach(id=>{const b=document.createElement('button');b.className='song';b.dataset.id=id;b.textContent=titles[id]||'…';
+    if(titles[id]&&titles[id].startsWith('⚠'))b.classList.add('bad'); b.onclick=()=>pickSong(id); box.appendChild(b); rows[id]=b});
+  $('#songs summary').textContent='🎵 Songs in this category ('+ids.length+')';
+  const todo=ids.filter(id=>titles[id]==null); let k=0;
+  const worker=async()=>{while(k<todo.length&&gen===songGen){const id=todo[k++];
+    try{const r=await fetch('https://www.youtube.com/oembed?format=json&url='+encodeURIComponent('https://www.youtube.com/watch?v='+id));
+      titles[id]=r.ok?((await r.json()).title||id):'⚠ can’t be played here (embedding off)';
+    }catch(e){titles[id]=null;continue}
+    if(rows[id]){rows[id].textContent=titles[id];rows[id].classList.toggle('bad',titles[id].startsWith('⚠'))}}
+    saveTitles()};
+  await Promise.all([worker(),worker(),worker(),worker()]);
+}
+async function pickSong(id){
+  const p=curPlayer(); if(!p) return;
+  try{
+    p.setShuffle(false);shuffleOn=false;shufLabel();
+    await new Promise(r=>setTimeout(r,500));
+    const ix=(p.getPlaylist()||[]).indexOf(id); if(ix<0){toast('Couldn’t find that song');return}
+    p.playVideoAt(ix);paused=false;render();
+    dbg('picked song at position '+ix);
+    setTimeout(fillSongs,900);
+  }catch(e){toast('Couldn’t switch song')}
+}
+$('#shufBtn').onclick=()=>{const p=curPlayer();if(!p)return;try{shuffleOn=!shuffleOn;p.setShuffle(shuffleOn);shufLabel();setTimeout(fillSongs,700)}catch(e){}};
+$('#songs').addEventListener('toggle',()=>{if($('#songs').open)fillSongs()});
 
 /* ================= Ambience (Web Audio, generated live) ================= */
 let actx=null,sfxMaster=null,noiseBuf=null,whiteBuf=null,impBuf=null,silentEl=null;
